@@ -5,10 +5,9 @@ class ThuatToanB52 {
   }
 
   /*─────────────────────────────────────────
-    PATTERN MATCHING — đa bậc (2, 3, 4 phiên)
-    Tìm chuỗi giống nhau trong toàn bộ 50 phiên,
-    tổng hợp xác suất kết quả tiếp theo theo từng bậc.
-    Bậc dài hơn → trọng số cao hơn (ít trùng nhưng đáng tin hơn).
+    PATTERN MATCHING — bậc 2, 3, 4
+    Tìm chuỗi giống nhau trong 50 phiên lịch sử,
+    tổng hợp xác suất theo từng bậc.
   ─────────────────────────────────────────*/
   _patternPredict(seq) {
     if (seq.length < 5) return null;
@@ -30,7 +29,6 @@ class ThuatToanB52 {
         }
       }
 
-      // Cần ít nhất 2 lần khớp để có ý nghĩa thống kê
       if (matched >= 2) {
         const weight = depth;
         scores['Tài']  += (tai  / matched) * weight;
@@ -42,17 +40,17 @@ class ThuatToanB52 {
     if (total === 0) return null;
 
     const pTai = scores['Tài'] / total;
-    // Chỉ dự đoán khi một bên chiếm > 55% — tránh nhiễu
-    if (pTai > 0.55) return { result: 'Tài',  conf: pTai };
-    if (pTai < 0.45) return { result: 'Xỉu', conf: 1 - pTai };
-    return null;
+    // Ngưỡng 52% — đủ để phân biệt mà không quá khắt khe
+    if (pTai >= 0.52) return { result: 'Tài',  conf: pTai };
+    if (pTai <= 0.48) return { result: 'Xỉu', conf: 1 - pTai };
+    // Vùng 48-52%: trả kết quả nhưng conf thấp
+    return { result: pTai >= 0.5 ? 'Tài' : 'Xỉu', conf: Math.max(pTai, 1 - pTai) };
   }
 
   /*─────────────────────────────────────────
     MARKOV CHAIN — bậc 1, 2, 3
-    Xây bảng xác suất chuyển trạng thái từ toàn bộ lịch sử.
-    Kết hợp nhiều bậc, bậc cao hơn trọng số cao hơn.
-    Cần ít nhất 3 lần xuất hiện mới tính.
+    Xây bảng xác suất chuyển trạng thái,
+    kết hợp nhiều bậc với trọng số.
   ─────────────────────────────────────────*/
   _markovPredict(seq) {
     if (seq.length < 4) return null;
@@ -74,30 +72,26 @@ class ThuatToanB52 {
 
       const currentKey = seq.slice(0, order).join('|');
       const entry = trans[currentKey];
-      // Cần ít nhất 3 lần xuất hiện để đáng tin
-      if (!entry || entry.total < 3) continue;
+      if (!entry || entry.total < 2) continue;
 
       const pTai = entry['Tài'] / entry.total;
       const pXiu = entry['Xỉu'] / entry.total;
-      const weight = order;
-
-      scores['Tài']  += pTai * weight;
-      scores['Xỉu'] += pXiu * weight;
+      scores['Tài']  += pTai * order;
+      scores['Xỉu'] += pXiu * order;
     }
 
     const total = scores['Tài'] + scores['Xỉu'];
     if (total === 0) return null;
 
     const pTai = scores['Tài'] / total;
-    if (pTai > 0.55) return { result: 'Tài',  conf: pTai };
-    if (pTai < 0.45) return { result: 'Xỉu', conf: 1 - pTai };
-    return null;
+    return {
+      result: pTai >= 0.5 ? 'Tài' : 'Xỉu',
+      conf: Math.max(pTai, 1 - pTai)
+    };
   }
 
   /*─────────────────────────────────────────
     STREAK GUARD — chống chuỗi thua liên tiếp
-    Phát hiện chuỗi dài và điều chỉnh chiều dự đoán.
-    Mục tiêu: max chuỗi thua ≤ 3.
   ─────────────────────────────────────────*/
   _streakGuard(seq, baseResult) {
     if (seq.length < 3) return baseResult;
@@ -112,7 +106,7 @@ class ThuatToanB52 {
     // Chuỗi 6+ → đảo chiều gần như chắc chắn
     if (streak >= 6) return cur === 'Tài' ? 'Xỉu' : 'Tài';
 
-    // Chuỗi 4-5 → ưu tiên đảo chiều nếu thuật toán chính cũng đồng ý
+    // Chuỗi 4-5 → ưu tiên đảo chiều nếu thuật toán đồng ý
     if (streak >= 4) {
       const opposite = cur === 'Tài' ? 'Xỉu' : 'Tài';
       return baseResult === opposite ? opposite : cur;
@@ -122,16 +116,12 @@ class ThuatToanB52 {
   }
 
   /*─────────────────────────────────────────
-    ENSEMBLE — tổng hợp Pattern + Markov
-    Trọng số: Pattern 3.0 | Markov 2.5
-    Fallback: tần suất 20 phiên nếu cả hai không đủ tin
-    Kết quả qua Streak Guard trước khi trả về
+    ENSEMBLE — luôn trả kết quả, không "Không rõ"
   ─────────────────────────────────────────*/
   duDoan(history) {
     if (history.length < 5) return 'Chưa có dữ liệu';
 
     const seq = history.map(h => h.ket_qua);
-
     const pattern = this._patternPredict(seq);
     const markov  = this._markovPredict(seq);
 
@@ -141,22 +131,25 @@ class ThuatToanB52 {
     if (markov)  votes[markov.result]  += 2.5 * markov.conf;
 
     let base;
+
     if (votes['Tài'] === 0 && votes['Xỉu'] === 0) {
-      // Fallback: tần suất 20 phiên gần nhất
+      // Fallback: tần suất toàn bộ lịch sử
+      const tai = seq.filter(v => v === 'Tài').length;
+      base = tai >= seq.length / 2 ? 'Tài' : 'Xỉu';
+    } else if (votes['Tài'] === votes['Xỉu']) {
+      // Hòa → theo tần suất 20 phiên gần nhất
       const recent = seq.slice(0, 20);
       const tai = recent.filter(v => v === 'Tài').length;
-      const xiu = recent.length - tai;
-      if (tai === xiu) return 'Không rõ';
-      base = tai > xiu ? 'Tài' : 'Xỉu';
+      base = tai >= 10 ? 'Tài' : 'Xỉu';
     } else {
-      base = votes['Tài'] >= votes['Xỉu'] ? 'Tài' : 'Xỉu';
+      base = votes['Tài'] > votes['Xỉu'] ? 'Tài' : 'Xỉu';
     }
 
     return this._streakGuard(seq, base);
   }
 
   /*─────────────────────────────────────────
-    CONFIDENCE — back-test trên 20 phiên gần nhất
+    CONFIDENCE — back-test 20 phiên gần nhất
   ─────────────────────────────────────────*/
   calculateConfidence(history, prediction, last_n = 20) {
     if (history.length < 6) return 0;
@@ -167,7 +160,6 @@ class ThuatToanB52 {
       const predicted = this.duDoan(history.slice(i));
       if (
         predicted !== 'Chưa có dữ liệu' &&
-        predicted !== 'Không rõ' &&
         predicted === recent[i + 1].ket_qua
       ) correct++;
       total++;
@@ -176,7 +168,6 @@ class ThuatToanB52 {
     return total > 0 ? Math.round((correct / total) * 100) : 0;
   }
 
-  // Chi tiết từng thuật toán (dùng cho /api/detail)
   duDoanChiTiet(history) {
     if (history.length < 5) return null;
     const seq = history.map(h => h.ket_qua);
