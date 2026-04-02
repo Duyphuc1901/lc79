@@ -34,6 +34,57 @@ function updateResult(store, history, result) {
   if (history.length > MAX_HISTORY) history.pop();
 }
 
+function parseItem(item) {
+  const [d1, d2, d3] = item.dices || [0, 0, 0];
+  return {
+    phien: item.id,
+    hash: item._id || "",
+    xuc_xac_1: d1, xuc_xac_2: d2, xuc_xac_3: d3,
+    tong: item.point ?? (d1 + d2 + d3),
+    ket_qua: item.resultTruyenThong === "TAI" ? "Tài" : "Xỉu",
+    phien_hien_tai: item.id + 1,
+    du_doan: "Chưa có dữ liệu", do_tin_cay: 0
+  };
+}
+
+// Load sẵn 50 phiên lịch sử khi khởi động để dự đoán ngay
+async function loadHistory(url, isMd5) {
+  const label = isMd5 ? "[MD5]" : "[TX]";
+  try {
+    const { data } = await axios.get(url, {
+      headers: { "User-Agent": "Node-Proxy/1.0" },
+      timeout: 10000
+    });
+    const list = data?.list || data?.data?.list || [];
+    if (!list.length) return;
+
+    const history = isMd5 ? history_md5 : history_tx;
+
+    // list[0] = mới nhất → push vào history theo thứ tự cũ → mới
+    const items = list.slice(0, MAX_HISTORY).reverse();
+    for (const item of items) {
+      history.unshift(parseItem(item));
+    }
+
+    // Cập nhật latest với dự đoán dựa trên history vừa load
+    const latest = parseItem(list[0]);
+    latest.du_doan    = thuattoan.duDoan(history);
+    latest.do_tin_cay = thuattoan.calculateConfidence(history, latest.du_doan);
+
+    if (isMd5) {
+      Object.assign(latest_md5, latest);
+      last_id_md5 = latest.phien;
+    } else {
+      Object.assign(latest_tx, latest);
+      last_id_tx = latest.phien;
+    }
+
+    console.log(`${label} Đã load ${history.length} phiên lịch sử. Dự đoán ngay: ${latest.du_doan} (${latest.do_tin_cay}%)`);
+  } catch (err) {
+    console.error(`${label} Lỗi load history:`, err.message);
+  }
+}
+
 // ---- Poll ----
 async function pollAPI(url, isMd5) {
   const label = isMd5 ? "[MD5]" : "[TX]";
@@ -92,9 +143,14 @@ app.get("/api/history", (req, res) => res.json({ taixiu: history_tx, taixiumd5: 
 app.get("/", (req, res) => res.send("LC79 TaiXiu API đang chạy. Endpoints: /api/taixiu | /api/taixiumd5 | /api/history"));
 
 // ---- Start ----
-console.log("Khởi động LC79 Tài Xỉu API...");
-pollAPI("https://wtx.tele68.com/v1/tx/sessions",       false);
-pollAPI("https://wtxmd52.tele68.com/v1/txmd5/sessions", true);
-console.log("Đang polling dữ liệu từ lc79...");
-
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+(async () => {
+  console.log("Khởi động LC79 Tài Xỉu API...");
+  await Promise.all([
+    loadHistory("https://wtx.tele68.com/v1/tx/sessions",        false),
+    loadHistory("https://wtxmd52.tele68.com/v1/txmd5/sessions", true)
+  ]);
+  console.log("History đã sẵn sàng. Bắt đầu polling...");
+  pollAPI("https://wtx.tele68.com/v1/tx/sessions",        false);
+  pollAPI("https://wtxmd52.tele68.com/v1/txmd5/sessions", true);
+  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+})();
