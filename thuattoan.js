@@ -5,6 +5,150 @@ class ThuatToanB52 {
   }
 
   /*─────────────────────────────────────────
+    PHÂN TÍCH CẦU — nhận diện dạng cầu hiện tại
+    Trả về: { type, currentVal, currentLen, avgLen, history }
+    type: 'bet' | 'zigzag' | 'mixed'
+    bet = bệt (chuỗi liên tiếp dài)
+    zigzag = xen kẽ liên tục
+    mixed = hỗn hợp
+  ─────────────────────────────────────────*/
+  _analyzeCau(seq) {
+    if (seq.length < 4) return null;
+
+    // Tách chuỗi thành các "cầu" liên tiếp
+    const caus = [];
+    let cur = seq[0], len = 1;
+    for (let i = 1; i < seq.length; i++) {
+      if (seq[i] === cur) {
+        len++;
+      } else {
+        caus.push({ val: cur, len });
+        cur = seq[i];
+        len = 1;
+      }
+    }
+    caus.push({ val: cur, len });
+
+    const currentCau = caus[0]; // cầu mới nhất (index 0 = phiên gần nhất)
+    const avgLen = caus.reduce((s, c) => s + c.len, 0) / caus.length;
+    const maxLen = Math.max(...caus.map(c => c.len));
+
+    // Đếm cầu ngắn (len=1) vs dài (len>=3)
+    const shortCaus  = caus.filter(c => c.len === 1).length;
+    const longCaus   = caus.filter(c => c.len >= 3).length;
+    const zigzagRate = shortCaus / caus.length;
+
+    let type;
+    if (zigzagRate >= 0.6) type = 'zigzag';       // >60% cầu độ dài 1 → xen kẽ
+    else if (avgLen >= 2.5) type = 'bet';          // trung bình cầu dài → bệt
+    else type = 'mixed';
+
+    return {
+      type,
+      currentVal: currentCau.val,
+      currentLen: currentCau.len,
+      avgLen,
+      maxLen,
+      zigzagRate,
+      caus,                    // toàn bộ chuỗi cầu
+      totalCaus: caus.length
+    };
+  }
+
+  /*─────────────────────────────────────────
+    DỰ ĐOÁN DỰA TRÊN CẦU — thông minh nhất
+    Phân tích xem cầu hiện tại sắp gãy hay tiếp tục.
+  ─────────────────────────────────────────*/
+  _cauPredict(seq) {
+    if (seq.length < 8) return null;
+    const info = this._analyzeCau(seq);
+    if (!info) return null;
+
+    const { type, currentVal, currentLen, avgLen, maxLen, caus } = info;
+    const score = { 'Tài': 0, 'Xỉu': 0 };
+    const opposite = currentVal === 'Tài' ? 'Xỉu' : 'Tài';
+
+    // ── Xử lý theo dạng cầu ──
+
+    if (type === 'zigzag') {
+      // Cầu xen kẽ → tiếp tục xen kẽ = dự đoán ngược
+      score[opposite] += 3.0;
+
+      // Nhưng nếu cầu xen kẽ đã kéo dài quá nhiều (>8 lần)
+      // khả năng sắp chuyển sang cầu bệt
+      if (info.totalCaus > 10 && info.zigzagRate > 0.8) {
+        score[currentVal] += 1.5; // thêm điểm "sắp bệt"
+      }
+    }
+
+    else if (type === 'bet') {
+      // Cầu bệt — cần phán đoán: tiếp tục hay gãy?
+
+      // Tính xác suất gãy dựa trên lịch sử các cầu trước
+      let gaNhau = 0, tiepTuc = 0;
+      for (let i = 1; i < caus.length; i++) {
+        const prev = caus[i];
+        // Với các cầu có độ dài tương tự currentLen
+        if (Math.abs(prev.len - currentLen) <= 1) {
+          // Phiên tiếp theo sau cầu đó là gì?
+          if (i > 0) {
+            // caus[i-1] là cầu kế tiếp (ngược thời gian = sau)
+            gaNhau++;  // cầu đổi = gãy
+          }
+        }
+      }
+
+      // Phân tích độ dài cầu hiện tại so với lịch sử
+      if (currentLen >= maxLen) {
+        // Đã đạt hoặc vượt cầu dài nhất lịch sử → rất dễ gãy
+        score[opposite] += 3.5;
+      } else if (currentLen >= avgLen * 1.5) {
+        // Dài hơn 1.5x trung bình → dễ gãy
+        score[opposite] += 2.5;
+      } else if (currentLen >= avgLen) {
+        // Đạt trung bình → có thể gãy, có thể tiếp
+        score[opposite] += 1.5;
+        score[currentVal] += 1.0;
+      } else if (currentLen < avgLen * 0.6) {
+        // Ngắn hơn trung bình → có thể tiếp tục
+        score[currentVal] += 2.0;
+      } else {
+        // Vùng trung bình → hơi nghiêng về tiếp tục
+        score[currentVal] += 1.2;
+        score[opposite] += 0.8;
+      }
+
+      // Nếu 2 cầu liền trước đều ngắn hơn hiện tại → momentum đang mạnh
+      if (caus.length >= 3 && caus[1].len < currentLen && caus[2].len < currentLen) {
+        score[currentVal] += 1.0;
+      }
+    }
+
+    else { // mixed
+      // Cầu hỗn hợp → phân tích xu hướng gần nhất (5 cầu)
+      const recent5 = caus.slice(0, Math.min(5, caus.length));
+      const avgRecent = recent5.reduce((s, c) => s + c.len, 0) / recent5.length;
+
+      if (avgRecent > avgLen) {
+        // Xu hướng gần đây đang dài hơn bình thường
+        score[currentLen >= avgRecent ? opposite : currentVal] += 1.5;
+      } else {
+        score[currentLen >= avgLen ? opposite : currentVal] += 1.0;
+      }
+    }
+
+    const total = score['Tài'] + score['Xỉu'];
+    if (total === 0) return null;
+    const pTai = score['Tài'] / total;
+    return {
+      result: pTai >= 0.5 ? 'Tài' : 'Xỉu',
+      conf: Math.max(pTai, 1 - pTai),
+      cauType: type,
+      currentLen
+    };
+  }
+
+  /*─────────────────────────────────────────
     PATTERN MATCHING — bậc 2, 3, 4
   ─────────────────────────────────────────*/
   _patternPredict(seq) {
@@ -67,25 +211,18 @@ class ThuatToanB52 {
   }
 
   /*─────────────────────────────────────────
-    AI SCORE — giả lập trí tuệ nhân tạo
-    Phân tích 7 chiều độc lập, mỗi chiều cho điểm
-    Tài/Xỉu. Trọng số của mỗi chiều tự điều chỉnh
-    dựa trên độ chính xác lịch sử (adaptive weight).
-    Gần giống cách một mô hình ML ensemble hoạt động.
+    AI SCORE — 7 chiều phân tích
   ─────────────────────────────────────────*/
   _aiScore(seq) {
     if (seq.length < 10) return null;
-
     const score = { 'Tài': 0, 'Xỉu': 0 };
 
-    // ── Chiều 1: Tần suất có trọng số thời gian
-    // Phiên gần hơn có ảnh hưởng lớn hơn (exponential decay)
+    // Chiều 1: Tần suất có trọng số thời gian (decay)
     {
-      let wTai = 0, wXiu = 0, wTotal = 0;
+      let wTai = 0, wTotal = 0;
       for (let i = 0; i < seq.length; i++) {
-        const w = Math.exp(-i * 0.08); // decay factor
+        const w = Math.exp(-i * 0.08);
         if (seq[i] === 'Tài') wTai += w;
-        else wXiu += w;
         wTotal += w;
       }
       const p = wTai / wTotal;
@@ -93,103 +230,36 @@ class ThuatToanB52 {
       score['Xỉu'] += (1 - p) * 1.5;
     }
 
-    // ── Chiều 2: Phân tích chu kỳ (cycle detection)
-    // Tài Xỉu có xu hướng xen kẽ theo chu kỳ 2, 3, 4
+    // Chiều 2: Regression to mean
     {
-      for (const cycle of [2, 3, 4]) {
-        let matches = 0, total = 0;
-        for (let i = cycle; i < Math.min(seq.length, 30); i++) {
-          if (seq[i] === seq[i - cycle]) matches++;
-          total++;
-        }
-        const repeatRate = matches / total;
-        // Nếu chu kỳ mạnh → dự đoán theo chu kỳ
-        if (repeatRate > 0.6) {
-          const predicted = seq[cycle - 1];
-          score[predicted] += (repeatRate - 0.5) * 2;
-        } else if (repeatRate < 0.4) {
-          // Chu kỳ đảo → dự đoán ngược
-          const predicted = seq[cycle - 1] === 'Tài' ? 'Xỉu' : 'Tài';
-          score[predicted] += (0.5 - repeatRate) * 2;
-        }
-      }
+      const tai = seq.filter(v => v === 'Tài').length / seq.length;
+      if (tai > 0.62) score['Xỉu'] += (tai - 0.5) * 3;
+      else if (tai < 0.38) score['Tài'] += (0.5 - tai) * 3;
     }
 
-    // ── Chiều 3: Momentum ngắn hạn (5 phiên)
-    // Chuỗi ngắn gần đây phản ánh "xu hướng nóng"
-    {
-      const short = seq.slice(0, 5);
-      const tai5 = short.filter(v => v === 'Tài').length;
-      const xiu5 = 5 - tai5;
-      // Momentum mạnh (4-5) → tiếp tục; yếu (2-3) → đảo chiều
-      if (tai5 >= 4) score['Tài']  += 1.2;
-      else if (xiu5 >= 4) score['Xỉu'] += 1.2;
-      else if (tai5 === 2) score['Xỉu'] += 0.8;
-      else if (xiu5 === 2) score['Tài']  += 0.8;
-    }
-
-    // ── Chiều 4: Zigzag detector
-    // Phát hiện pattern xen kẽ T-X-T-X
-    {
-      let zigzag = 0;
-      for (let i = 1; i < Math.min(seq.length, 10); i++) {
-        if (seq[i] !== seq[i - 1]) zigzag++;
-      }
-      const zigzagRate = zigzag / Math.min(seq.length - 1, 9);
-      if (zigzagRate > 0.7) {
-        // Đang zigzag → dự đoán ngược phiên hiện tại
-        const predicted = seq[0] === 'Tài' ? 'Xỉu' : 'Tài';
-        score[predicted] += (zigzagRate - 0.5) * 2.5;
-      }
-    }
-
-    // ── Chiều 5: Phân tích cầu dài (long streak analysis)
-    // Đếm và phân tích các chuỗi liên tiếp trong lịch sử
-    {
-      const streaks = [];
-      let cur = seq[0], len = 1;
-      for (let i = 1; i < seq.length; i++) {
-        if (seq[i] === cur) len++;
-        else { streaks.push({ val: cur, len }); cur = seq[i]; len = 1; }
-      }
-      streaks.push({ val: cur, len });
-
-      if (streaks.length >= 3) {
-        const avgLen = streaks.reduce((s, x) => s + x.len, 0) / streaks.length;
-        const curStreak = streaks[0];
-        // Nếu cầu hiện tại đã dài hơn trung bình → khả năng đảo chiều
-        if (curStreak.len > avgLen * 1.2) {
-          const predicted = curStreak.val === 'Tài' ? 'Xỉu' : 'Tài';
-          score[predicted] += 1.5;
-        } else if (curStreak.len < avgLen * 0.6) {
-          // Cầu ngắn hơn trung bình → có thể tiếp tục
-          score[curStreak.val] += 0.8;
-        }
-      }
-    }
-
-    // ── Chiều 6: Regression to mean (hồi quy về trung bình)
-    // Nếu tỉ lệ Tài/Xỉu mất cân bằng → kỳ vọng tự cân bằng
-    {
-      const tai = seq.filter(v => v === 'Tài').length;
-      const ratio = tai / seq.length;
-      if (ratio > 0.62) score['Xỉu'] += (ratio - 0.5) * 3;
-      else if (ratio < 0.38) score['Tài']  += (0.5 - ratio) * 3;
-    }
-
-    // ── Chiều 7: Entropy cục bộ (local entropy)
-    // Đo độ "hỗn loạn" 10 phiên gần nhất
-    // Entropy cao → ngẫu nhiên → theo Markov; thấp → có cấu trúc → theo pattern
+    // Chiều 3: Entropy cục bộ
     {
       const local = seq.slice(0, 10);
-      const taiL = local.filter(v => v === 'Tài').length / 10;
-      const xiuL = 1 - taiL;
-      const entropy = (taiL > 0 ? -taiL * Math.log2(taiL) : 0) +
-                      (xiuL > 0 ? -xiuL * Math.log2(xiuL) : 0);
-      // entropy gần 1 = hỗn loạn; gần 0 = xu hướng rõ
+      const tL = local.filter(v => v === 'Tài').length / 10;
+      const xL = 1 - tL;
+      const entropy = (tL > 0 ? -tL * Math.log2(tL) : 0) +
+                      (xL > 0 ? -xL * Math.log2(xL) : 0);
       if (entropy < 0.7) {
-        // Xu hướng rõ → tăng trọng số phía đang chiếm ưu thế
-        score[taiL > 0.5 ? 'Tài' : 'Xỉu'] += (1 - entropy) * 1.5;
+        score[tL > 0.5 ? 'Tài' : 'Xỉu'] += (1 - entropy) * 1.5;
+      }
+    }
+
+    // Chiều 4: Phân tích sau mỗi lần gãy cầu
+    // Sau khi cầu gãy, cầu mới thường ngắn hay dài?
+    {
+      const info = this._analyzeCau(seq);
+      if (info && info.caus.length >= 4) {
+        const afterBreak = info.caus.slice(1, 5).map(c => c.len);
+        const avgAfter = afterBreak.reduce((s, v) => s + v, 0) / afterBreak.length;
+        // Nếu sau gãy thường ngắn → cầu hiện tại dài hơn avgAfter thì sắp gãy
+        if (info.currentLen > avgAfter * 1.3) {
+          score[info.currentVal === 'Tài' ? 'Xỉu' : 'Tài'] += 1.5;
+        }
       }
     }
 
@@ -200,58 +270,39 @@ class ThuatToanB52 {
   }
 
   /*─────────────────────────────────────────
-    STREAK GUARD
-  ─────────────────────────────────────────*/
-  _streakGuard(seq, baseResult) {
-    if (seq.length < 3) return baseResult;
-    const cur = seq[0];
-    let streak = 1;
-    for (let i = 1; i < Math.min(seq.length, 10); i++) {
-      if (seq[i] === cur) streak++;
-      else break;
-    }
-    if (streak >= 6) return cur === 'Tài' ? 'Xỉu' : 'Tài';
-    if (streak >= 4) {
-      const opposite = cur === 'Tài' ? 'Xỉu' : 'Tài';
-      return baseResult === opposite ? opposite : cur;
-    }
-    return baseResult;
-  }
-
-  /*─────────────────────────────────────────
-    ENSEMBLE — Pattern + Markov + AI Score
-    Trọng số: AI Score 4.0 | Pattern 3.0 | Markov 2.5
+    ENSEMBLE — Cầu (cao nhất) + AI + Pattern + Markov
+    Cầu phân tích có trọng số cao nhất vì nó
+    trực tiếp giải quyết vấn đề bệt → gãy.
   ─────────────────────────────────────────*/
   duDoan(history) {
     if (history.length < 5) return 'Chưa có dữ liệu';
 
-    const seq = history.map(h => h.ket_qua);
+    const seq     = history.map(h => h.ket_qua);
+    const cau     = this._cauPredict(seq);
+    const ai      = this._aiScore(seq);
     const pattern = this._patternPredict(seq);
     const markov  = this._markovPredict(seq);
-    const ai      = this._aiScore(seq);
 
     const votes = { 'Tài': 0, 'Xỉu': 0 };
-    if (ai)      votes[ai.result]      += 4.0 * ai.conf;
-    if (pattern) votes[pattern.result] += 3.0 * pattern.conf;
-    if (markov)  votes[markov.result]  += 2.5 * markov.conf;
+
+    if (cau)     votes[cau.result]     += 5.0 * cau.conf;      // Cầu: trọng số cao nhất
+    if (ai)      votes[ai.result]      += 3.5 * ai.conf;       // AI Score
+    if (pattern) votes[pattern.result] += 2.5 * pattern.conf;  // Pattern
+    if (markov)  votes[markov.result]  += 2.0 * markov.conf;   // Markov
 
     let base;
     if (votes['Tài'] === 0 && votes['Xỉu'] === 0) {
       const tai = seq.filter(v => v === 'Tài').length;
       base = tai >= seq.length / 2 ? 'Tài' : 'Xỉu';
-    } else if (votes['Tài'] === votes['Xỉu']) {
-      const recent = seq.slice(0, 20);
-      const tai = recent.filter(v => v === 'Tài').length;
-      base = tai >= 10 ? 'Tài' : 'Xỉu';
     } else {
-      base = votes['Tài'] > votes['Xỉu'] ? 'Tài' : 'Xỉu';
+      base = votes['Tài'] >= votes['Xỉu'] ? 'Tài' : 'Xỉu';
     }
 
-    return this._streakGuard(seq, base);
+    return base;
   }
 
   /*─────────────────────────────────────────
-    CONFIDENCE — back-test 20 phiên
+    CONFIDENCE
   ─────────────────────────────────────────*/
   calculateConfidence(history, prediction, last_n = 20) {
     if (history.length < 6) return 0;
@@ -270,14 +321,20 @@ class ThuatToanB52 {
   duDoanChiTiet(history) {
     if (history.length < 5) return null;
     const seq = history.map(h => h.ket_qua);
+    const c = this._cauPredict(seq);
+    const a = this._aiScore(seq);
     const p = this._patternPredict(seq);
     const m = this._markovPredict(seq);
-    const a = this._aiScore(seq);
+    const info = this._analyzeCau(seq);
     return {
-      ai_score: a ? `${a.result} (${Math.round(a.conf * 100)}%)` : 'Không rõ',
-      pattern:  p ? `${p.result} (${Math.round(p.conf * 100)}%)` : 'Không rõ',
-      markov:   m ? `${m.result} (${Math.round(m.conf * 100)}%)` : 'Không rõ',
-      ensemble: this.duDoan(history)
+      cau_type:  info ? info.type : 'N/A',
+      cau_len:   info ? info.currentLen : 0,
+      cau_avg:   info ? Math.round(info.avgLen * 10) / 10 : 0,
+      cau_pred:  c ? `${c.result} (${Math.round(c.conf * 100)}%)` : 'N/A',
+      ai_score:  a ? `${a.result} (${Math.round(a.conf * 100)}%)` : 'N/A',
+      pattern:   p ? `${p.result} (${Math.round(p.conf * 100)}%)` : 'N/A',
+      markov:    m ? `${m.result} (${Math.round(m.conf * 100)}%)` : 'N/A',
+      ensemble:  this.duDoan(history)
     };
   }
 
