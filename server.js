@@ -5,7 +5,7 @@ const ThuatToan = require("./thuattoan.js");
 const app = express();
 const PORT = process.env.PORT || 8000;
 const POLL_INTERVAL = 5000;
-const MAX_HISTORY = 50;
+const MAX_HISTORY = 100;
 
 const thuattoan = new ThuatToan();
 
