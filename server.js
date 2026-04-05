@@ -155,10 +155,15 @@ async function pollAPI(url, isMd5) {
 app.get("/api/taixiu",    (req, res) => res.json(latest_tx));
 app.get("/api/taixiumd5", (req, res) => res.json(latest_md5));
 
-// History với đối chiếu kết quả thực tế
+// History với đối chiếu kết quả thực tế + xúc xắc
 app.get("/api/history", (req, res) => {
   const format = (h) => ({
     phien_hien_tai:  h.phien_hien_tai,
+    xuc_xac_1:       h.xuc_xac_1,
+    xuc_xac_2:       h.xuc_xac_2,
+    xuc_xac_3:       h.xuc_xac_3,
+    tong:            h.tong,
+    ket_qua:         h.ket_qua,
     du_doan:         h.du_doan,
     ket_qua_thuc_te: h.ket_qua_thuc_te || "Chờ kết quả...",
     status:          h.status          || "⏳",
