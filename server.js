@@ -53,6 +53,9 @@ function updateResult(store, history, result) {
     }
   }
 
+  // Pattern Memory học từ phiên mới
+  thuattoan.hocTuPhien([result, ...history]);
+
   Object.assign(store, result);
   history.unshift({ ...result });
   if (history.length > MAX_HISTORY) history.pop();
@@ -75,8 +78,8 @@ async function loadHistory(url, isMd5) {
     for (let i = 0; i < items.length; i++) {
       const parsed = parseItem(items[i]);
       // Tính du_doan cho phiên này dựa trên các phiên trước đó
-      parsed.du_doan    = history.length >= 5 ? thuattoan.duDoan(history) : "Chưa có dữ liệu";
-      parsed.do_tin_cay = history.length >= 5 ? thuattoan.calculateConfidence(history, parsed.du_doan) : 0;
+      parsed.du_doan    = history.length >= 8 ? thuattoan.duDoan(history) : "Chưa có dữ liệu";
+      parsed.do_tin_cay = history.length >= 8 ? thuattoan.calculateConfidence(history) : 0;
 
       // So sánh du_doan của phiên trước với ket_qua phiên hiện tại
       if (history.length > 0) {
@@ -87,6 +90,7 @@ async function loadHistory(url, isMd5) {
         }
       }
 
+      thuattoan.hocTuPhien([parsed, ...history]);
       history.unshift(parsed);
     }
 
@@ -128,7 +132,7 @@ async function pollAPI(url, isMd5) {
         if (isMd5) last_id_md5 = sid; else last_id_tx = sid;
 
         const du_doan    = thuattoan.duDoan(history);
-        const do_tin_cay = thuattoan.calculateConfidence(history, du_doan);
+        const do_tin_cay = thuattoan.calculateConfidence(history);
 
         const result = {
           phien: sid, hash,
