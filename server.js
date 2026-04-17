@@ -1,11 +1,15 @@
 const express = require("express");
-const axios = require("axios");
+const axios   = require("axios");
+const fs      = require("fs");
+const path    = require("path");
 const ThuatToan = require("./thuattoan.js");
 
-const app = express();
-const PORT = process.env.PORT || 8000;
-const POLL_INTERVAL = 5000;
-const MAX_HISTORY = 100;
+const app          = express();
+const PORT         = process.env.PORT || 8000;
+const POLL_INTERVAL= 5000;
+const MAX_HISTORY  = 100;
+const MEMORY_FILE  = path.join(__dirname, "memory.json");
+const SAVE_INTERVAL= 60000; // lưu memory mỗi 1 phút
 
 const thuattoan = new ThuatToan();
 
@@ -15,16 +19,39 @@ app.use((req, res, next) => {
 });
 
 // ---- State ----
-let latest_tx = {
-  phien: 0, xuc_xac_1: 0, xuc_xac_2: 0, xuc_xac_3: 0,
-  tong: 0, ket_qua: "Chưa có", phien_hien_tai: 0,
-  du_doan: "Chưa có dữ liệu", do_tin_cay: 0
-};
+let latest_tx  = { phien:0,xuc_xac_1:0,xuc_xac_2:0,xuc_xac_3:0,tong:0,ket_qua:"Chưa có",phien_hien_tai:0,du_doan:"Chưa có dữ liệu",do_tin_cay:0 };
 let latest_md5 = { ...latest_tx };
 let history_tx  = [];
 let history_md5 = [];
 let last_id_tx  = null;
 let last_id_md5 = null;
+
+// ---- Memory Persistence ----
+function saveMemory() {
+  try {
+    const data = thuattoan.exportMemory();
+    fs.writeFileSync(MEMORY_FILE, JSON.stringify(data));
+    console.log(`[Memory] Đã lưu ${data.phien} phiên, ${Object.keys(data.mem).length} patterns`);
+  } catch (e) {
+    console.error("[Memory] Lỗi lưu:", e.message);
+  }
+}
+
+function loadMemory() {
+  try {
+    if (!fs.existsSync(MEMORY_FILE)) {
+      console.log("[Memory] Chưa có file memory, bắt đầu từ đầu");
+      return;
+    }
+    const data = JSON.parse(fs.readFileSync(MEMORY_FILE, "utf8"));
+    const ok   = thuattoan.importMemory(data);
+    if (ok) {
+      console.log(`[Memory] Đã load ${data.phien} phiên, ${Object.keys(data.mem).length} patterns (lưu lúc ${data.savedAt})`);
+    }
+  } catch (e) {
+    console.error("[Memory] Lỗi load:", e.message);
+  }
+}
 
 // ---- Helper ----
 function parseItem(item) {
@@ -40,21 +67,18 @@ function parseItem(item) {
   };
 }
 
-// Thêm phiên mới vào history, đồng thời cập nhật kết quả thực tế
-// cho phiên trước (history[0] là phiên cũ nhất vừa push, chưa có ket_qua_thuc_te)
-function updateResult(store, history, result) {
-  // Phiên vừa có kết quả = result.ket_qua
-  // Phiên trước đó (history[0]) đã dự đoán cho phiên này → so sánh
+function updateResult(store, history, result, isMd5) {
+  // Cập nhật kết quả thực tế cho phiên trước
   if (history.length > 0) {
     const prev = history[0];
-    if (prev.du_doan && prev.du_doan !== "Chưa có dữ liệu" && prev.du_doan !== "Không rõ") {
+    if (prev.du_doan && prev.du_doan !== "Chưa có dữ liệu") {
       prev.ket_qua_thuc_te = result.ket_qua;
       prev.status = prev.du_doan === result.ket_qua ? "✅" : "❌";
     }
   }
 
   // Pattern Memory học từ phiên mới
-  thuattoan.hocTuPhien([result, ...history]);
+  thuattoan.hocTuPhien([result, ...history], isMd5);
 
   Object.assign(store, result);
   history.unshift({ ...result });
@@ -73,33 +97,30 @@ async function loadHistory(url, isMd5) {
     if (!list.length) return;
 
     const history = isMd5 ? history_md5 : history_tx;
-    const items = list.slice(0, MAX_HISTORY).reverse(); // cũ → mới
+    const items   = list.slice(0, MAX_HISTORY).reverse(); // cũ → mới
 
     for (let i = 0; i < items.length; i++) {
-      const parsed = parseItem(items[i]);
-      // Tính du_doan cho phiên này dựa trên các phiên trước đó
+      const parsed     = parseItem(items[i]);
       parsed.du_doan    = history.length >= 8 ? thuattoan.duDoan(history) : "Chưa có dữ liệu";
       parsed.do_tin_cay = history.length >= 8 ? thuattoan.calculateConfidence(history) : 0;
 
-      // So sánh du_doan của phiên trước với ket_qua phiên hiện tại
       if (history.length > 0) {
         const prev = history[0];
-        if (prev.du_doan && prev.du_doan !== "Chưa có dữ liệu" && prev.du_doan !== "Không rõ") {
+        if (prev.du_doan && prev.du_doan !== "Chưa có dữ liệu") {
           prev.ket_qua_thuc_te = parsed.ket_qua;
           prev.status = prev.du_doan === parsed.ket_qua ? "✅" : "❌";
         }
       }
 
-      thuattoan.hocTuPhien([parsed, ...history]);
+      thuattoan.hocTuPhien([parsed, ...history], isMd5);
       history.unshift(parsed);
     }
 
-    // Cập nhật latest
     const latest = history[0];
     if (isMd5) { Object.assign(latest_md5, latest); last_id_md5 = latest.phien; }
     else        { Object.assign(latest_tx,  latest); last_id_tx  = latest.phien; }
 
-    console.log(`${label} Đã load ${history.length} phiên. Dự đoán: ${latest.du_doan} (${latest.do_tin_cay}%)`);
+    console.log(`${label} Đã load ${history.length} phiên | Dự đoán: ${latest.du_doan} (${latest.do_tin_cay}%)`);
   } catch (err) {
     console.error(`${label} Lỗi load history:`, err.message);
   }
@@ -116,13 +137,13 @@ async function pollAPI(url, isMd5) {
       });
 
       const list = data?.list || data?.data?.list || [];
-      if (!list.length) throw new Error("Không có dữ liệu list");
+      if (!list.length) throw new Error("Không có dữ liệu");
 
-      const latest = list[0];
-      const sid    = latest.id;
-      const hash   = latest._id || "";
-      const [d1, d2, d3] = latest.dices || [0, 0, 0];
-      const tong    = latest.point ?? (d1 + d2 + d3);
+      const latest  = list[0];
+      const sid     = latest.id;
+      const hash    = latest._id || "";
+      const [d1,d2,d3] = latest.dices || [0,0,0];
+      const tong    = latest.point ?? (d1+d2+d3);
       const ket_qua = latest.resultTruyenThong === "TAI" ? "Tài" : "Xỉu";
 
       const history = isMd5 ? history_md5 : history_tx;
@@ -142,10 +163,11 @@ async function pollAPI(url, isMd5) {
           du_doan, do_tin_cay
         };
 
-        if (isMd5) updateResult(latest_md5, history_md5, result);
-        else       updateResult(latest_tx,  history_tx,  result);
+        if (isMd5) updateResult(latest_md5, history_md5, result, true);
+        else       updateResult(latest_tx,  history_tx,  result, false);
 
-        console.log(`${label} Phiên ${sid} | ${ket_qua} | Dự đoán tiếp: ${du_doan} (${do_tin_cay}%)`);
+        const stats = thuattoan.getStats();
+        console.log(`${label} Phiên ${sid} | ${ket_qua} | → ${du_doan} (${do_tin_cay}%) | Đã học: ${stats.tong_phien_hoc} phiên`);
       }
     } catch (err) {
       console.error(`${label} Lỗi:`, err.message);
@@ -159,7 +181,6 @@ async function pollAPI(url, isMd5) {
 app.get("/api/taixiu",    (req, res) => res.json(latest_tx));
 app.get("/api/taixiumd5", (req, res) => res.json(latest_md5));
 
-// History với đối chiếu kết quả thực tế + xúc xắc
 app.get("/api/history", (req, res) => {
   const format = (h) => ({
     phien_hien_tai:  h.phien_hien_tai,
@@ -173,7 +194,6 @@ app.get("/api/history", (req, res) => {
     status:          h.status          || "⏳",
     do_tin_cay:      h.do_tin_cay
   });
-
   res.json({
     taixiu:    history_tx.map(format),
     taixiumd5: history_md5.map(format)
@@ -187,18 +207,54 @@ app.get("/api/detail", (req, res) => {
   });
 });
 
+// Thống kê tổng hợp
+app.get("/api/stats", (req, res) => {
+  const stats = thuattoan.getStats();
+
+  // Tính win rate từ history thực tế
+  const calcWinRate = (history) => {
+    const valid = history.filter(h => h.status === "✅" || h.status === "❌");
+    if (!valid.length) return { win: 0, lose: 0, rate: 0, max_lose_streak: 0 };
+    const win  = valid.filter(h => h.status === "✅").length;
+    const lose = valid.length - win;
+    let maxStreak = 0, cur = 0;
+    for (const h of valid) {
+      if (h.status === "❌") { cur++; maxStreak = Math.max(maxStreak, cur); }
+      else cur = 0;
+    }
+    return { win, lose, rate: Math.round(win/valid.length*100), max_lose_streak: maxStreak };
+  };
+
+  res.json({
+    ...stats,
+    ban_thuong: calcWinRate(history_tx),
+    ban_md5:    calcWinRate(history_md5),
+  });
+});
+
 app.get("/", (req, res) => res.send(
-  "LC79 TaiXiu API | /api/taixiu | /api/taixiumd5 | /api/history | /api/detail"
+  "LC79 TaiXiu API | /api/taixiu | /api/taixiumd5 | /api/history | /api/detail | /api/stats"
 ));
 
 // ---- Start ----
 (async () => {
   console.log("Khởi động LC79 Tài Xỉu API...");
+
+  // Load memory đã lưu trước
+  loadMemory();
+
+  // Load history từ API
   await Promise.all([
     loadHistory("https://wtx.tele68.com/v1/tx/sessions",        false),
     loadHistory("https://wtxmd52.tele68.com/v1/txmd5/sessions", true)
   ]);
+
   console.log("History sẵn sàng. Bắt đầu polling...");
+  console.log("Stats:", JSON.stringify(thuattoan.getStats()));
+
+  // Tự động lưu memory mỗi 1 phút
+  setInterval(saveMemory, SAVE_INTERVAL);
+
   pollAPI("https://wtx.tele68.com/v1/tx/sessions",        false);
   pollAPI("https://wtxmd52.tele68.com/v1/txmd5/sessions", true);
   app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
