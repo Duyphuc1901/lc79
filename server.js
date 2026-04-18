@@ -1,15 +1,16 @@
 const express = require("express");
 const axios   = require("axios");
-const fs      = require("fs");
-const path    = require("path");
 const ThuatToan = require("./thuattoan.js");
 
 const app          = express();
 const PORT         = process.env.PORT || 8000;
 const POLL_INTERVAL= 5000;
 const MAX_HISTORY  = 100;
-const MEMORY_FILE  = path.join(__dirname, "memory.json");
-const SAVE_INTERVAL= 60000; // lưu memory mỗi 1 phút
+const SAVE_INTERVAL= 120000; // lưu memory mỗi 2 phút
+
+// ── JSONBin config — đặt biến môi trường trên Render ──
+const JSONBIN_KEY = process.env.JSONBIN_KEY || "";  // Secret Key
+const JSONBIN_BIN = process.env.JSONBIN_BIN || "";  // Bin ID
 
 const thuattoan = new ThuatToan();
 
@@ -26,30 +27,39 @@ let history_md5 = [];
 let last_id_tx  = null;
 let last_id_md5 = null;
 
-// ---- Memory Persistence ----
-function saveMemory() {
+// ---- Memory Persistence (JSONBin.io) ----
+async function saveMemory() {
+  if (!JSONBIN_KEY || !JSONBIN_BIN) return;
   try {
     const data = thuattoan.exportMemory();
-    fs.writeFileSync(MEMORY_FILE, JSON.stringify(data));
-    console.log(`[Memory] Đã lưu ${data.phien} phiên, ${Object.keys(data.mem).length} patterns`);
+    await axios.put(
+      `https://api.jsonbin.io/v3/b/${JSONBIN_BIN}`,
+      data,
+      { headers: { "X-Master-Key": JSONBIN_KEY, "Content-Type": "application/json" } }
+    );
+    console.log(`[Memory] Đã lưu lên JSONBin: ${data.phien} phiên, ${Object.keys(data.mem).length} patterns`);
   } catch (e) {
-    console.error("[Memory] Lỗi lưu:", e.message);
+    console.error("[Memory] Lỗi lưu JSONBin:", e.message);
   }
 }
 
-function loadMemory() {
+async function loadMemory() {
+  if (!JSONBIN_KEY || !JSONBIN_BIN) {
+    console.log("[Memory] Chưa cấu hình JSONBin, bắt đầu từ đầu");
+    return;
+  }
   try {
-    if (!fs.existsSync(MEMORY_FILE)) {
-      console.log("[Memory] Chưa có file memory, bắt đầu từ đầu");
-      return;
-    }
-    const data = JSON.parse(fs.readFileSync(MEMORY_FILE, "utf8"));
+    const res  = await axios.get(
+      `https://api.jsonbin.io/v3/b/${JSONBIN_BIN}/latest`,
+      { headers: { "X-Master-Key": JSONBIN_KEY } }
+    );
+    const data = res.data.record;
     const ok   = thuattoan.importMemory(data);
     if (ok) {
-      console.log(`[Memory] Đã load ${data.phien} phiên, ${Object.keys(data.mem).length} patterns (lưu lúc ${data.savedAt})`);
+      console.log(`[Memory] Đã load từ JSONBin: ${data.phien} phiên, ${Object.keys(data.mem).length} patterns (lưu lúc ${data.savedAt})`);
     }
   } catch (e) {
-    console.error("[Memory] Lỗi load:", e.message);
+    console.error("[Memory] Lỗi load JSONBin:", e.message);
   }
 }
 
@@ -78,7 +88,8 @@ function updateResult(store, history, result, isMd5) {
   }
 
   // Pattern Memory học từ phiên mới
-  thuattoan.hocTuPhien([result, ...history], isMd5);
+  const prevConf = history.length > 0 ? (history[0].do_tin_cay || 0) / 100 : 0.5;
+  thuattoan.hocTuPhien([result, ...history], isMd5, prevConf);
 
   Object.assign(store, result);
   history.unshift({ ...result });
@@ -112,7 +123,7 @@ async function loadHistory(url, isMd5) {
         }
       }
 
-      thuattoan.hocTuPhien([parsed, ...history], isMd5);
+      thuattoan.hocTuPhien([parsed, ...history], isMd5, (parsed.do_tin_cay||0)/100);
       history.unshift(parsed);
     }
 
@@ -240,8 +251,8 @@ app.get("/", (req, res) => res.send(
 (async () => {
   console.log("Khởi động LC79 Tài Xỉu API...");
 
-  // Load memory đã lưu trước
-  loadMemory();
+  // Load memory từ JSONBin
+  await loadMemory();
 
   // Load history từ API
   await Promise.all([
