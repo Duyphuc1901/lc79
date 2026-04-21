@@ -118,7 +118,7 @@ class ThuatToanB52 {
   /*─────────────────────────────────────────
     HỌC — cập nhật memory sau mỗi phiên
   ─────────────────────────────────────────*/
-  hocTuPhien(history, isMd5 = false) {
+  hocTuPhien(history, isMd5 = false, predConf = 0.5) {
     if (history.length < 6) return;
 
     this.phien++;
@@ -144,8 +144,10 @@ class ThuatToanB52 {
         entry.tai  *= df;
         entry.xiu  *= df;
       }
-      if (actual === 'Tài') entry.tai += w;
-      else                   entry.xiu += w;
+      // Confidence-weighted: tự tin cao mà sai → học mạnh hơn
+      const lrMult = (predConf || 0.5) > 0.6 ? 1.5 : (predConf || 0.5) > 0.4 ? 1.0 : 0.5;
+      if (actual === 'Tài') entry.tai += w * lrMult;
+      else                   entry.xiu += w * lrMult;
       entry.lastSeen = this.phien;
     }
   }
@@ -185,31 +187,21 @@ class ThuatToanB52 {
   }
 
   /*─────────────────────────────────────────
-    CONFIDENCE
+    CONFIDENCE — win rate thực tế 20 phiên gần nhất
+    Đọc từ status ✅/❌ trong history thật
   ─────────────────────────────────────────*/
   calculateConfidence(history) {
-    if (history.length < 8) return 0;
+    if (history.length < 5) return 0;
 
-    const seq  = history.map(h => h.ket_qua);
-    const tng  = history.map(h => h.tong);
-    const keys = this._makeKeys(seq, tng);
+    // Lấy 20 phiên gần nhất có kết quả thực tế
+    const valid = history
+      .filter(h => h.status === '✅' || h.status === '❌')
+      .slice(0, 20);
 
-    let totalConf = 0, matched = 0;
+    if (valid.length < 5) return 0;
 
-    for (const { key, w } of keys) {
-      const entry = this.mem[key];
-      if (!entry) continue;
-      const total = entry.tai + entry.xiu;
-      if (total < 3) continue;
-      const pTai = entry.tai / total;
-      const conf = Math.abs(pTai - 0.5);
-      if (conf < 0.1) continue;
-      totalConf += conf * w;
-      matched++;
-    }
-
-    if (matched === 0) return 0;
-    return Math.min(99, Math.round((totalConf / matched) * 150));
+    const wins = valid.filter(h => h.status === '✅').length;
+    return Math.round((wins / valid.length) * 100);
   }
 
   /*─────────────────────────────────────────
