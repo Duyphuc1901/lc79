@@ -163,7 +163,7 @@ async function pollAPI(url, isMd5) {
       if (sid && sid !== lastId) {
         if (isMd5) last_id_md5 = sid; else last_id_tx = sid;
 
-        const du_doan    = thuattoan.duDoan(history);
+        const du_doan    = thuattoan.duDoan(history, isMd5);
         const do_tin_cay = thuattoan.calculateConfidence(history);
 
         const result = {
