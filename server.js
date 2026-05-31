@@ -1,5 +1,6 @@
-  const express   = require("express");
+const express   = require("express");
 const axios     = require("axios");
+const path      = require("path");
 const ThuatToan = require("./thuattoan.js");
 
 const app          = express();
@@ -22,26 +23,45 @@ let history_md5 = [];
 let last_id_tx  = null;
 let last_id_md5 = null;
 
-// ── Parse item từ API ──
+// ── Load cau.txt ──
+function loadCauDB() {
+  try {
+    const filePath = path.join(__dirname, "cau.txt");
+    if (!fs.existsSync(filePath)) {
+      console.log("[CauDB] Không tìm thấy cau.txt — bỏ qua");
+      return;
+    }
+    const lines = fs.readFileSync(filePath, "utf8").trim().split("\n");
+    const cauDB = lines.map(line => {
+      const m = line.match(/\d+\.\s+([TX]+)\s+-\s+([TX])/);
+      if (!m) return null;
+      return { pattern: m[1], result: m[2] === "T" ? "Tài" : "Xỉu" };
+    }).filter(Boolean);
+    thuattoan.setCauDB(cauDB);
+  } catch (e) {
+    console.error("[CauDB] Lỗi load:", e.message);
+  }
+}
+
+// ── Parse item ──
 function parseItem(item) {
   const [d1, d2, d3] = item.dices || [0, 0, 0];
   return {
-    phien:         item.id,
-    hash:          item._id || "",
-    xuc_xac_1:     d1,
-    xuc_xac_2:     d2,
-    xuc_xac_3:     d3,
-    tong:          item.point ?? (d1 + d2 + d3),
-    ket_qua:       item.resultTruyenThong === "TAI" ? "Tài" : "Xỉu",
-    phien_hien_tai:item.id + 1,
-    du_doan:       "Chưa có dữ liệu",
-    do_tin_cay:    0
+    phien:          item.id,
+    hash:           item._id || "",
+    xuc_xac_1:      d1,
+    xuc_xac_2:      d2,
+    xuc_xac_3:      d3,
+    tong:           item.point ?? (d1 + d2 + d3),
+    ket_qua:        item.resultTruyenThong === "TAI" ? "Tài" : "Xỉu",
+    phien_hien_tai: item.id + 1,
+    du_doan:        "Chưa có dữ liệu",
+    do_tin_cay:     0
   };
 }
 
-// ── Update history + kết quả thực tế ──
+// ── Update history ──
 function updateResult(store, history, result) {
-  // Đánh giá dự đoán của phiên trước
   if (history.length > 0) {
     const prev = history[0];
     if (prev.du_doan && prev.du_doan !== "Chưa có dữ liệu") {
@@ -49,13 +69,12 @@ function updateResult(store, history, result) {
       prev.status          = prev.du_doan === result.ket_qua ? "✅" : "❌";
     }
   }
-
   Object.assign(store, result);
   history.unshift({ ...result });
   if (history.length > MAX_HISTORY) history.pop();
 }
 
-// ── Load 100 phiên lịch sử khi khởi động ──
+// ── Load history ──
 async function loadHistory(url, isMd5) {
   const label = isMd5 ? "[MD5]" : "[TX]";
   try {
@@ -63,19 +82,17 @@ async function loadHistory(url, isMd5) {
       headers: { "User-Agent": "Node-Proxy/1.0" },
       timeout: 10000
     });
-
     const list  = data?.list || data?.data?.list || [];
     if (!list.length) return;
 
     const history = isMd5 ? history_md5 : history_tx;
-    const items   = list.slice(0, MAX_HISTORY).reverse(); // cũ → mới
+    const items   = list.slice(0, MAX_HISTORY).reverse();
 
     for (let i = 0; i < items.length; i++) {
       const parsed      = parseItem(items[i]);
       parsed.du_doan    = history.length >= 10 ? thuattoan.duDoan(history) : "Chưa có dữ liệu";
       parsed.do_tin_cay = history.length >= 10 ? thuattoan.calculateConfidence(history) : 0;
 
-      // Đánh giá dự đoán phiên trước
       if (history.length > 0) {
         const prev = history[0];
         if (prev.du_doan && prev.du_doan !== "Chưa có dữ liệu") {
@@ -83,7 +100,6 @@ async function loadHistory(url, isMd5) {
           prev.status          = prev.du_doan === parsed.ket_qua ? "✅" : "❌";
         }
       }
-
       history.unshift(parsed);
     }
 
@@ -97,7 +113,7 @@ async function loadHistory(url, isMd5) {
   }
 }
 
-// ── Poll API ──
+// ── Poll ──
 async function pollAPI(url, isMd5) {
   const label = isMd5 ? "[MD5]" : "[TX]";
   while (true) {
@@ -106,19 +122,18 @@ async function pollAPI(url, isMd5) {
         headers: { "User-Agent": "Node-Proxy/1.0" },
         timeout: 10000
       });
-
-      const list    = data?.list || data?.data?.list || [];
+      const list   = data?.list || data?.data?.list || [];
       if (!list.length) throw new Error("Không có dữ liệu");
 
-      const item    = list[0];
-      const sid     = item.id;
-      const lastId  = isMd5 ? last_id_md5 : last_id_tx;
+      const item   = list[0];
+      const sid    = item.id;
+      const lastId = isMd5 ? last_id_md5 : last_id_tx;
 
       if (sid && sid !== lastId) {
         if (isMd5) last_id_md5 = sid; else last_id_tx = sid;
 
-        const [d1, d2, d3] = item.dices || [0, 0, 0];
-        const history      = isMd5 ? history_md5 : history_tx;
+        const [d1,d2,d3] = item.dices || [0,0,0];
+        const history    = isMd5 ? history_md5 : history_tx;
 
         const du_doan    = thuattoan.duDoan(history);
         const do_tin_cay = thuattoan.calculateConfidence(history);
@@ -179,7 +194,7 @@ app.get("/api/stats", (req, res) => {
   const calcWinRate = history => {
     const valid = history.filter(h => h.status === "✅" || h.status === "❌");
     if (!valid.length) return { win:0, lose:0, rate:0, max_lose_streak:0 };
-    const win  = valid.filter(h => h.status === "✅").length;
+    const win = valid.filter(h => h.status === "✅").length;
     let maxS=0, cur=0;
     for (const h of valid) {
       if (h.status === "❌") { cur++; maxS = Math.max(maxS, cur); }
@@ -187,7 +202,6 @@ app.get("/api/stats", (req, res) => {
     }
     return { win, lose: valid.length-win, rate: Math.round(win/valid.length*100), max_lose_streak: maxS };
   };
-
   res.json({
     ...thuattoan.getStats(),
     ban_thuong: calcWinRate(history_tx),
@@ -202,10 +216,14 @@ app.get("/", (req, res) => res.send(
 // ── Start ──
 (async () => {
   console.log("Khởi động LC79 Tài Xỉu API...");
+// Load cau.txt trước
+  loadCauDB();
+
   await Promise.all([
     loadHistory("https://wtx.tele68.com/v1/tx/sessions",        false),
     loadHistory("https://wtxmd52.tele68.com/v1/txmd5/sessions", true)
   ]);
+
   console.log("Sẵn sàng. Bắt đầu polling...");
   pollAPI("https://wtx.tele68.com/v1/tx/sessions",        false);
   pollAPI("https://wtxmd52.tele68.com/v1/txmd5/sessions", true);
