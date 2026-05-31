@@ -1,15 +1,23 @@
 /**
- * ENSEMBLE: Cầu DB + Conditional Frequency + Gradient Boosting
- * ─────────────────────────────────────────────────────────────
- * 3 engine kết hợp:
- * 1. CauDB     — lookup 10000 mẫu cầu từ file cau.txt
- * 2. CondFreq  — xác suất tổng T → phiên tiếp theo (từ 100 phiên)
- * 3. GB        — 5 weak learners tự học trọng số
+ * DICE ANALYSIS + TOTAL ANALYSIS
+ * ────────────────────────────────
+ * 1. Phân tích từng xúc xắc riêng biệt (d1, d2, d3)
+ *    - Tìm lịch sử các phiên có xúc xắc X = giá trị hiện tại
+ *    - Xem phiên tiếp theo xúc xắc X thường ra số mấy
+ *    - Dự đoán số tiếp theo cho từng viên (trung bình có trọng số)
+ *    - Cộng 3 viên → ≤10 = Xỉu, ≥11 = Tài
+ *
+ * 2. Phân tích theo tổng điểm
+ *    - Tìm phiên gần nhất trong lịch sử có cùng tổng
+ *    - Xem phiên ngay sau đó ra Tài hay Xỉu
+ *
+ * 3. Kết hợp:
+ *    - Cùng kết quả → lấy kết quả đó
+ *    - Khác nhau → ưu tiên dự đoán xúc xắc
  */
 class ThuatToanB52 {
 
   constructor() {
-    this.cauDB     = []; // sẽ được load từ bên ngoài
     this.startTime = Date.now();
   }
 
@@ -18,193 +26,158 @@ class ThuatToanB52 {
   }
 
   /*─────────────────────────────────────────
-    LOAD CẦU DB từ file cau.txt
-    Gọi một lần khi khởi động server
+    DỰ ĐOÁN GIÁ TRỊ TIẾP THEO CHO 1 XÚC XẮC
+    - Tìm tất cả phiên trong lịch sử mà xúc_xac_N = giá trị hiện tại
+    - Xem phiên tiếp theo (phiên trước trong mảng vì mới nhất ở đầu)
+      xúc_xac_N ra giá trị bao nhiêu
+    - Trả về giá trị dự đoán (trung bình có trọng số, phiên gần hơn nặng hơn)
   ─────────────────────────────────────────*/
-  loadCauDB(fileContent) {
-    const lines = fileContent.trim().split('\n');
-    this.cauDB = lines.map(line => {
-      const m = line.match(/\d+\.\s+([TX]+)\s+-\s+([TX])/);
-      if (!m) return null;
-      return { pat: m[1], res: m[2] === 'T' ? 'Tài' : 'Xỉu' };
-    }).filter(Boolean);
-    console.log(`[CauDB] Đã load ${this.cauDB.length} mẫu cầu`);
+  _predictOneDice(history, diceIndex, currentValue) {
+    // diceIndex: 1, 2, hoặc 3
+    const field = `xuc_xac_${diceIndex}`;
+
+    // Tìm các phiên trong lịch sử có xúc xắc này = currentValue
+    // history[0] = mới nhất
+    // Cần: history[i][field] === currentValue → history[i-1][field] = giá trị tiếp theo
+    const nextValues = [];
+
+    for (let i = history.length - 1; i >= 1; i--) {
+      if (history[i][field] === currentValue) {
+        const nextVal = history[i - 1][field]; // phiên tiếp theo
+        if (nextVal >= 1 && nextVal <= 6) {
+          // Trọng số: phiên gần hơn (i nhỏ hơn) → weight cao hơn
+          const weight = 1 + (history.length - i) / history.length;
+          nextValues.push({ val: nextVal, weight });
+        }
+      }
+    }
+
+    if (!nextValues.length) return null;
+
+    // Tính trung bình có trọng số
+    const totalWeight  = nextValues.reduce((s, x) => s + x.weight, 0);
+    const weightedSum  = nextValues.reduce((s, x) => s + x.val * x.weight, 0);
+    const predicted    = weightedSum / totalWeight;
+
+    // Phân phối: đếm số lần từng giá trị 1-6 xuất hiện
+    const dist = {};
+    for (let v = 1; v <= 6; v++) dist[v] = 0;
+    nextValues.forEach(x => dist[x.val] += x.weight);
+
+    // Tìm giá trị có xác suất cao nhất (mode)
+    let modeVal = 1, modeWeight = 0;
+    for (let v = 1; v <= 6; v++) {
+      if (dist[v] > modeWeight) { modeWeight = dist[v]; modeVal = v; }
+    }
+
+    return {
+      predicted: Math.round(predicted),  // làm tròn về số nguyên gần nhất
+      mode:      modeVal,                // giá trị phổ biến nhất
+      avg:       predicted,
+      samples:   nextValues.length,
+      dist
+    };
   }
 
   /*─────────────────────────────────────────
-    CẦU DB PREDICT
-    Dùng 14 phiên gần nhất để tra bảng cầu
-    Thử khớp từ 14 → 12 ký tự
+    DỰ ĐOÁN THEO XÚC XẮC
+    Phân tích cả 3 viên, cộng tổng → Tài/Xỉu
   ─────────────────────────────────────────*/
-  _cauDBPredict(seq) {
-    if (!this.cauDB.length || seq.length < 12) return null;
+  _dicePredict(history) {
+    if (history.length < 5) return null;
 
-    // Encode seq thành chuỗi T/X
-    const encoded = seq.slice(0, 14).map(v => v === 'Tài' ? 'T' : 'X').join('');
+    const current = history[0]; // phiên mới nhất
+    const d1 = current.xuc_xac_1;
+    const d2 = current.xuc_xac_2;
+    const d3 = current.xuc_xac_3;
 
-    // Thử khớp từ dài → ngắn
-    for (const len of [14, 13, 12]) {
-      if (encoded.length < len) continue;
-      const pat = encoded.slice(0, len);
+    if (!d1 || !d2 || !d3) return null;
 
-      // Tìm tất cả pattern khớp phần cuối
-      const matches = this.cauDB.filter(c =>
-        c.pat.length >= len && c.pat.slice(c.pat.length - len) === pat ||
-        c.pat.slice(0, len) === pat
-      );
+    const r1 = this._predictOneDice(history, 1, d1);
+    const r2 = this._predictOneDice(history, 2, d2);
+    const r3 = this._predictOneDice(history, 3, d3);
 
-      if (matches.length < 3) continue;
+    // Nếu không đủ data cho viên nào → dùng giá trị trung bình xúc xắc (3.5)
+    const p1 = r1 ? r1.mode : Math.round((d1 + 3.5) / 2);
+    const p2 = r2 ? r2.mode : Math.round((d2 + 3.5) / 2);
+    const p3 = r3 ? r3.mode : Math.round((d3 + 3.5) / 2);
 
-      const tai  = matches.filter(c => c.res === 'Tài').length;
-      const xiu  = matches.length - tai;
-      const conf = Math.abs(tai - xiu) / matches.length;
+    const tongDuDoan = p1 + p2 + p3;
+    const result     = tongDuDoan <= 10 ? 'Xỉu' : 'Tài';
 
-      if (conf < 0.15) continue; // quá cân bằng
+    return {
+      d1_current: d1, d1_predict: p1, d1_samples: r1?.samples || 0,
+      d2_current: d2, d2_predict: p2, d2_samples: r2?.samples || 0,
+      d3_current: d3, d3_predict: p3, d3_samples: r3?.samples || 0,
+      tong_du_doan: tongDuDoan,
+      result
+    };
+  }
 
-      return {
-        pred:    tai > xiu ? 'Tài' : 'Xỉu',
-        conf,
-        matches: matches.length,
-        len
-      };
+  /*─────────────────────────────────────────
+    DỰ ĐOÁN THEO TỔNG ĐIỂM
+    Tìm phiên gần nhất có cùng tổng → xem phiên sau ra gì
+  ─────────────────────────────────────────*/
+  _totalPredict(history) {
+    if (history.length < 3) return null;
+
+    const currentTong = history[0].tong;
+    if (!currentTong) return null;
+
+    // Tìm từ phiên gần nhất (i=1) đến cũ nhất
+    // history[i].tong === currentTong → history[i-1].ket_qua là phiên tiếp theo
+    for (let i = 1; i < history.length; i++) {
+      if (history[i].tong === currentTong) {
+        const nextResult = history[i - 1].ket_qua;
+        if (nextResult === 'Tài' || nextResult === 'Xỉu') {
+          return {
+            found_at:   i,        // cách bao nhiêu phiên
+            tong:       currentTong,
+            result:     nextResult
+          };
+        }
+      }
+    }
+
+    // Không tìm được tổng chính xác → thử ±1
+    for (let i = 1; i < history.length; i++) {
+      if (Math.abs(history[i].tong - currentTong) === 1) {
+        const nextResult = history[i - 1].ket_qua;
+        if (nextResult === 'Tài' || nextResult === 'Xỉu') {
+          return {
+            found_at:   i,
+            tong:       history[i].tong,
+            result:     nextResult,
+            approx:     true    // khớp gần đúng ±1
+          };
+        }
+      }
     }
 
     return null;
   }
 
   /*─────────────────────────────────────────
-    CONDITIONAL FREQUENCY
-    Bảng tổng T → phiên tiếp theo từ 100 phiên
-  ─────────────────────────────────────────*/
-  _buildCondFreq(history) {
-    const table = {};
-    for (let i = history.length - 1; i >= 1; i--) {
-      const tong = history[i].tong;
-      const next = history[i - 1].ket_qua;
-      if (!tong || !next) continue;
-      if (!table[tong]) table[tong] = { tai: 0, xiu: 0 };
-      const w = 1 + (history.length - i) / history.length;
-      if (next === 'Tài') table[tong].tai += w;
-      else                 table[tong].xiu += w;
-    }
-    return table;
-  }
-
-  _condFreqPredict(table, currentTong) {
-    const e = table[currentTong];
-    if (!e) return null;
-    const total    = e.tai + e.xiu;
-    if (total < 3) return null;
-    const pTai     = e.tai / total;
-    const strength = Math.abs(pTai - 0.5);
-    if (strength < 0.15) return null;
-    return {
-      pred: pTai > 0.5 ? 'Tài' : 'Xỉu',
-      conf: strength,
-      pTai: Math.round(pTai * 100)
-    };
-  }
-
-  /*─────────────────────────────────────────
-    GRADIENT BOOSTING — 5 weak learners
-  ─────────────────────────────────────────*/
-  _gbPredict(seq, tng) {
-    if (seq.length < 8) return null;
-    const f = new Array(5).fill(0);
-
-    // F0: Tần suất decay
-    {
-      let wT = 0, wTotal = 0;
-      for (let i = 0; i < Math.min(seq.length, 20); i++) {
-        const w = Math.exp(-i * 0.1);
-        if (seq[i] === 'Tài') wT += w;
-        wTotal += w;
-      }
-      f[0] = (wT / wTotal - 0.5) * 2;
-    }
-
-    // F1: Tổng zone
-    {
-      const t = tng[0];
-      f[1] = t >= 13 ? -0.3 : t <= 8 ? 0.3 : t <= 10 ? -0.2 : 0.1;
-    }
-
-    // F2: Markov bậc 2
-    {
-      const s = seq.slice(0, 20), tr = {};
-      for (let i = 0; i < s.length - 2; i++) {
-        const k = s[i] + '|' + s[i + 1];
-        if (!tr[k]) tr[k] = { T: 0, X: 0 };
-        s[i + 2] === 'Tài' ? tr[k].T++ : tr[k].X++;
-      }
-      const e = tr[seq[0] + '|' + seq[1]];
-      if (e && e.T + e.X >= 2) f[2] = (e.T / (e.T + e.X) - 0.5) * 2;
-    }
-
-    // F3: Streak
-    {
-      let streak = 1;
-      for (let i = 1; i < Math.min(seq.length, 7); i++) {
-        if (seq[i] === seq[0]) streak++;
-        else break;
-      }
-      if      (streak >= 5) f[3] = seq[0] === 'Tài' ? -0.9 : 0.9;
-      else if (streak >= 3) f[3] = seq[0] === 'Tài' ? -0.5 : 0.5;
-      else if (streak >= 2) f[3] = seq[0] === 'Tài' ?  0.3 : -0.3;
-    }
-
-    // F4: Regression to mean
-    {
-      const tai = seq.slice(0, 15).filter(v => v === 'Tài').length / 15;
-      f[4] = tai > 0.65 ? -0.5 : tai < 0.35 ? 0.5 : 0;
-    }
-
-    const weights = [0.25, 0.15, 0.30, 0.20, 0.10];
-    const score   = f.reduce((acc, fi, i) => acc + weights[i] * fi, 0);
-    if (Math.abs(score) < 0.05) return null;
-    return { pred: score > 0 ? 'Tài' : 'Xỉu', score };
-  }
-
-  /*─────────────────────────────────────────
-    DỰ ĐOÁN CHÍNH — Weighted Ensemble
-    Trọng số: CauDB 4.0 | CondFreq 3.5 | GB 1.5
+    DỰ ĐOÁN CHÍNH
+    Kết hợp dice + total:
+    - Đồng ý → lấy kết quả đó
+    - Khác nhau → ưu tiên dice
   ─────────────────────────────────────────*/
   duDoan(history) {
-    if (history.length < 10) return 'Chưa có dữ liệu';
+    if (history.length < 5) return 'Chưa có dữ liệu';
 
-    const seq   = history.map(h => h.ket_qua);
-    const tng   = history.map(h => h.tong);
-    const table = this._buildCondFreq(history);
+    const dice  = this._dicePredict(history);
+    const total = this._totalPredict(history);
 
-    const caudb = this._cauDBPredict(seq);
-    const cf    = this._condFreqPredict(table, tng[0]);
-    const gb    = this._gbPredict(seq, tng);
+    if (!dice && !total) return 'Chưa có dữ liệu';
+    if (!dice)  return total.result;
+    if (!total) return dice.result;
 
-    const votes = { 'Tài': 0, 'Xỉu': 0 };
+    // Cả hai cùng kết quả
+    if (dice.result === total.result) return dice.result;
 
-    // CauDB — trọng số cao nhất khi conf cao
-    if (caudb) {
-      const w = 4.0 * (0.5 + caudb.conf);
-      votes[caudb.pred] += w;
-    }
-
-    // CondFreq — trọng số theo độ mạnh signal
-    if (cf) {
-      const w = 3.5 + cf.conf * 3.0;
-      votes[cf.pred] += w;
-    }
-
-    // GB — hỗ trợ
-    if (gb) {
-      votes[gb.pred] += 1.5 * Math.min(1, Math.abs(gb.score) * 2);
-    }
-
-    if (votes['Tài'] === 0 && votes['Xỉu'] === 0) {
-      const tai = seq.slice(0, 8).filter(v => v === 'Tài').length;
-      return tai > 4 ? 'Tài' : 'Xỉu';
-    }
-
-    return votes['Tài'] >= votes['Xỉu'] ? 'Tài' : 'Xỉu';
+    // Khác nhau → ưu tiên dice
+    return dice.result;
   }
 
   /*─────────────────────────────────────────
@@ -227,36 +200,43 @@ class ThuatToanB52 {
     const min = Math.floor(ms / 60000);
     const h   = Math.floor(min / 60);
     return {
-      uptime:     h > 0 ? `${h}h ${min % 60}m` : `${min}m`,
-      mode:       'CauDB + CondFreq(100) + GradientBoosting',
-      cau_loaded: this.cauDB.length
+      uptime: h > 0 ? `${h}h ${min % 60}m` : `${min}m`,
+      mode:   'Dice Analysis + Total Analysis'
     };
   }
 
+  /*─────────────────────────────────────────
+    CHI TIẾT — dùng cho /api/detail
+  ─────────────────────────────────────────*/
   duDoanChiTiet(history) {
-    if (history.length < 10) return null;
-    const seq   = history.map(h => h.ket_qua);
-    const tng   = history.map(h => h.tong);
-    const table = this._buildCondFreq(history);
-    const caudb = this._cauDBPredict(seq);
-    const cf    = this._condFreqPredict(table, tng[0]);
-    const gb    = this._gbPredict(seq, tng);
+    if (history.length < 5) return null;
 
-    const bangTong = {};
-    Object.keys(table).sort((a,b)=>+a-+b).forEach(t => {
-      const e = table[t], n = e.tai + e.xiu;
-      if (n < 3) return;
-      const p = e.tai / n;
-      bangTong[`tong_${t}`] = `${p > 0.5 ? 'Tài' : 'Xỉu'} (${Math.round(Math.max(p,1-p)*100)}%, n=${Math.round(n)})`;
-    });
+    const dice  = this._dicePredict(history);
+    const total = this._totalPredict(history);
+    const final = this.duDoan(history);
 
     return {
-      tong_hien_tai:  tng[0],
-      cau_db:         caudb ? `${caudb.pred} (${Math.round(caudb.conf*100)}%, ${caudb.matches} khớp, bậc ${caudb.len})` : 'Không đủ khớp',
-      cond_freq:      cf    ? `${cf.pred} (Tài=${cf.pTai}%)` : 'Không đủ mẫu',
-      gradient_boost: gb    ? `${gb.pred} (score=${gb.score.toFixed(2)})` : 'Không rõ',
-      ensemble:       this.duDoan(history),
-      bang_tong:      bangTong,
+      // Phân tích xúc xắc
+      xuc_xac: dice ? {
+        d1: `${dice.d1_current} → dự đoán ${dice.d1_predict} (${dice.d1_samples} mẫu)`,
+        d2: `${dice.d2_current} → dự đoán ${dice.d2_predict} (${dice.d2_samples} mẫu)`,
+        d3: `${dice.d3_current} → dự đoán ${dice.d3_predict} (${dice.d3_samples} mẫu)`,
+        tong_du_doan: dice.tong_du_doan,
+        ket_qua: dice.result
+      } : 'Không đủ data',
+
+      // Phân tích tổng
+      phan_tich_tong: total ? {
+        tong_hien_tai:  history[0].tong,
+        tim_thay_tai:   `${total.found_at} phiên trước${total.approx ? ' (±1)' : ''}`,
+        ket_qua:        total.result
+      } : 'Không tìm được',
+
+      // Kết hợp
+      dong_thuan:  dice && total ? dice.result === total.result : null,
+      uu_tien:     dice && total && dice.result !== total.result ? 'Xúc xắc' : null,
+      du_doan:     final,
+
       ...this.getStats()
     };
   }
@@ -265,7 +245,11 @@ class ThuatToanB52 {
     if (!history.length) return { tai: 0, xiu: 0 };
     const total = history.length;
     const tai   = history.filter(h => h.ket_qua === 'Tài').length;
-    return { tai: Math.round(tai/total*100), xiu: Math.round((total-tai)/total*100), tong_phien: total };
+    return {
+      tai:        Math.round(tai / total * 100),
+      xiu:        Math.round((total - tai) / total * 100),
+      tong_phien: total
+    };
   }
 }
 
