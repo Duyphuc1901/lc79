@@ -1,19 +1,14 @@
 /**
- * DICE ANALYSIS + TOTAL ANALYSIS
- * ────────────────────────────────
- * 1. Phân tích từng xúc xắc riêng biệt (d1, d2, d3)
- *    - Tìm lịch sử các phiên có xúc xắc X = giá trị hiện tại
- *    - Xem phiên tiếp theo xúc xắc X thường ra số mấy
- *    - Dự đoán số tiếp theo cho từng viên (trung bình có trọng số)
- *    - Cộng 3 viên → ≤10 = Xỉu, ≥11 = Tài
+ * 3 THUẬT TOÁN KẾT HỢP
+ * ─────────────────────
+ * 1. DICE  — Xúc xắc: lấy phiên gần nhất có cùng giá trị từng viên
+ * 2. TOTAL — Tổng: lấy phiên gần nhất có cùng tổng → phiên sau Tài/Xỉu
+ * 3. ODD   — Chẵn/Lẻ: lấy phiên gần nhất cùng kết quả + cùng tổng
+ *            → phiên sau tổng chẵn = Xỉu, lẻ = Tài
  *
- * 2. Phân tích theo tổng điểm
- *    - Tìm phiên gần nhất trong lịch sử có cùng tổng
- *    - Xem phiên ngay sau đó ra Tài hay Xỉu
- *
- * 3. Kết hợp:
- *    - Cùng kết quả → lấy kết quả đó
- *    - Khác nhau → ưu tiên dự đoán xúc xắc
+ * Kết hợp:
+ * - 2/3 đồng thuận → lấy kết quả đó, do_tin_cay = 50%
+ * - 3/3 đồng thuận → lấy kết quả đó, do_tin_cay = 80%
  */
 class ThuatToanB52 {
 
@@ -26,97 +21,56 @@ class ThuatToanB52 {
   }
 
   /*─────────────────────────────────────────
-    DỰ ĐOÁN GIÁ TRỊ TIẾP THEO CHO 1 XÚC XẮC
-    - Tìm tất cả phiên trong lịch sử mà xúc_xac_N = giá trị hiện tại
-    - Xem phiên tiếp theo (phiên trước trong mảng vì mới nhất ở đầu)
-      xúc_xac_N ra giá trị bao nhiêu
-    - Trả về giá trị dự đoán (trung bình có trọng số, phiên gần hơn nặng hơn)
-  ─────────────────────────────────────────*/
-  _predictOneDice(history, diceIndex, currentValue) {
-    // diceIndex: 1, 2, hoặc 3
-    const field = `xuc_xac_${diceIndex}`;
-
-    // Tìm các phiên trong lịch sử có xúc xắc này = currentValue
-    // history[0] = mới nhất
-    // Cần: history[i][field] === currentValue → history[i-1][field] = giá trị tiếp theo
-    const nextValues = [];
-
-    for (let i = history.length - 1; i >= 1; i--) {
-      if (history[i][field] === currentValue) {
-        const nextVal = history[i - 1][field]; // phiên tiếp theo
-        if (nextVal >= 1 && nextVal <= 6) {
-          // Trọng số: phiên gần hơn (i nhỏ hơn) → weight cao hơn
-          const weight = 1 + (history.length - i) / history.length;
-          nextValues.push({ val: nextVal, weight });
-        }
-      }
-    }
-
-    if (!nextValues.length) return null;
-
-    // Tính trung bình có trọng số
-    const totalWeight  = nextValues.reduce((s, x) => s + x.weight, 0);
-    const weightedSum  = nextValues.reduce((s, x) => s + x.val * x.weight, 0);
-    const predicted    = weightedSum / totalWeight;
-
-    // Phân phối: đếm số lần từng giá trị 1-6 xuất hiện
-    const dist = {};
-    for (let v = 1; v <= 6; v++) dist[v] = 0;
-    nextValues.forEach(x => dist[x.val] += x.weight);
-
-    // Tìm giá trị có xác suất cao nhất (mode)
-    let modeVal = 1, modeWeight = 0;
-    for (let v = 1; v <= 6; v++) {
-      if (dist[v] > modeWeight) { modeWeight = dist[v]; modeVal = v; }
-    }
-
-    return {
-      predicted: Math.round(predicted),  // làm tròn về số nguyên gần nhất
-      mode:      modeVal,                // giá trị phổ biến nhất
-      avg:       predicted,
-      samples:   nextValues.length,
-      dist
-    };
-  }
-
-  /*─────────────────────────────────────────
-    DỰ ĐOÁN THEO XÚC XẮC
-    Phân tích cả 3 viên, cộng tổng → Tài/Xỉu
+    THUẬT TOÁN 1: PHÂN TÍCH XÚC XẮC
+    Với mỗi viên, tìm phiên GẦN NHẤT có cùng giá trị
+    → lấy giá trị của viên đó ở phiên tiếp theo
+    Cộng 3 viên dự đoán → ≤10 Xỉu, ≥11 Tài
   ─────────────────────────────────────────*/
   _dicePredict(history) {
-    if (history.length < 5) return null;
+    if (history.length < 3) return null;
 
-    const current = history[0]; // phiên mới nhất
-    const d1 = current.xuc_xac_1;
-    const d2 = current.xuc_xac_2;
-    const d3 = current.xuc_xac_3;
-
+    const cur = history[0];
+    const d1 = cur.xuc_xac_1;
+    const d2 = cur.xuc_xac_2;
+    const d3 = cur.xuc_xac_3;
     if (!d1 || !d2 || !d3) return null;
 
-    const r1 = this._predictOneDice(history, 1, d1);
-    const r2 = this._predictOneDice(history, 2, d2);
-    const r3 = this._predictOneDice(history, 3, d3);
+    // Tìm phiên gần nhất cho từng viên
+    // history[i] có giá trị → phiên tiếp theo là history[i-1]
+    const findNearest = (diceField, value) => {
+      for (let i = 1; i < history.length; i++) {
+        if (history[i][diceField] === value) {
+          const next = history[i - 1][diceField];
+          if (next >= 1 && next <= 6) return { next, found_at: i };
+        }
+      }
+      return null;
+    };
 
-    // Nếu không đủ data cho viên nào → dùng giá trị trung bình xúc xắc (3.5)
-    const p1 = r1 ? r1.mode : Math.round((d1 + 3.5) / 2);
-    const p2 = r2 ? r2.mode : Math.round((d2 + 3.5) / 2);
-    const p3 = r3 ? r3.mode : Math.round((d3 + 3.5) / 2);
+    const r1 = findNearest('xuc_xac_1', d1);
+    const r2 = findNearest('xuc_xac_2', d2);
+    const r3 = findNearest('xuc_xac_3', d3);
+
+    // Fallback: dùng giá trị hiện tại nếu không tìm được
+    const p1 = r1 ? r1.next : d1;
+    const p2 = r2 ? r2.next : d2;
+    const p3 = r3 ? r3.next : d3;
 
     const tongDuDoan = p1 + p2 + p3;
-    const result     = tongDuDoan <= 10 ? 'Xỉu' : 'Tài';
 
     return {
-      d1_current: d1, d1_predict: p1, d1_samples: r1?.samples || 0,
-      d2_current: d2, d2_predict: p2, d2_samples: r2?.samples || 0,
-      d3_current: d3, d3_predict: p3, d3_samples: r3?.samples || 0,
+      d1_cur: d1, d1_pred: p1, d1_at: r1?.found_at,
+      d2_cur: d2, d2_pred: p2, d2_at: r2?.found_at,
+      d3_cur: d3, d3_pred: p3, d3_at: r3?.found_at,
       tong_du_doan: tongDuDoan,
-      result
+      result: tongDuDoan <= 10 ? 'Xỉu' : 'Tài'
     };
   }
 
   /*─────────────────────────────────────────
-    DỰ ĐOÁN THEO TỔNG ĐIỂM
-    Tìm phiên gần nhất có cùng tổng → xem phiên sau ra gì
+    THUẬT TOÁN 2: PHÂN TÍCH TỔNG
+    Tìm phiên GẦN NHẤT có cùng tổng
+    → phiên tiếp theo ra Tài hay Xỉu
   ─────────────────────────────────────────*/
   _totalPredict(history) {
     if (history.length < 3) return null;
@@ -124,31 +78,88 @@ class ThuatToanB52 {
     const currentTong = history[0].tong;
     if (!currentTong) return null;
 
-    // Tìm từ phiên gần nhất (i=1) đến cũ nhất
-    // history[i].tong === currentTong → history[i-1].ket_qua là phiên tiếp theo
+    // Tìm chính xác trước
     for (let i = 1; i < history.length; i++) {
       if (history[i].tong === currentTong) {
-        const nextResult = history[i - 1].ket_qua;
-        if (nextResult === 'Tài' || nextResult === 'Xỉu') {
+        const next = history[i - 1].ket_qua;
+        if (next === 'Tài' || next === 'Xỉu') {
+          return { tong: currentTong, found_at: i, result: next, approx: false };
+        }
+      }
+    }
+
+    // Fallback ±1
+    for (let i = 1; i < history.length; i++) {
+      if (Math.abs(history[i].tong - currentTong) === 1) {
+        const next = history[i - 1].ket_qua;
+        if (next === 'Tài' || next === 'Xỉu') {
+          return { tong: history[i].tong, found_at: i, result: next, approx: true };
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /*─────────────────────────────────────────
+    THUẬT TOÁN 3: PHÂN TÍCH CHẴN/LẺ
+    Tìm phiên GẦN NHẤT có cùng kết quả VÀ cùng tổng
+    → phiên tiếp theo tổng chẵn = Xỉu, lẻ = Tài
+    Nếu không có cùng kết quả + tổng → chỉ cùng kết quả
+  ─────────────────────────────────────────*/
+  _oddEvenPredict(history) {
+    if (history.length < 3) return null;
+
+    const curKq   = history[0].ket_qua;
+    const curTong = history[0].tong;
+    if (!curKq || !curTong) return null;
+
+    // Thử 1: tìm phiên gần nhất cùng kết quả VÀ cùng tổng
+    for (let i = 1; i < history.length; i++) {
+      if (history[i].ket_qua === curKq && history[i].tong === curTong) {
+        const nextTong = history[i - 1].tong;
+        if (nextTong) {
+          const isEven  = nextTong % 2 === 0;
           return {
-            found_at:   i,        // cách bao nhiêu phiên
-            tong:       currentTong,
-            result:     nextResult
+            found_at:  i,
+            match:     `${curKq} + tổng ${curTong}`,
+            next_tong: nextTong,
+            chan_le:   isEven ? 'Chẵn' : 'Lẻ',
+            result:    isEven ? 'Xỉu' : 'Tài'
           };
         }
       }
     }
 
-    // Không tìm được tổng chính xác → thử ±1
+    // Thử 2: chỉ cần cùng kết quả + tổng ±1
     for (let i = 1; i < history.length; i++) {
-      if (Math.abs(history[i].tong - currentTong) === 1) {
-        const nextResult = history[i - 1].ket_qua;
-        if (nextResult === 'Tài' || nextResult === 'Xỉu') {
+      if (history[i].ket_qua === curKq && Math.abs(history[i].tong - curTong) <= 1) {
+        const nextTong = history[i - 1].tong;
+        if (nextTong) {
+          const isEven = nextTong % 2 === 0;
           return {
-            found_at:   i,
-            tong:       history[i].tong,
-            result:     nextResult,
-            approx:     true    // khớp gần đúng ±1
+            found_at:  i,
+            match:     `${curKq} + tổng ${history[i].tong} (±1)`,
+            next_tong: nextTong,
+            chan_le:   isEven ? 'Chẵn' : 'Lẻ',
+            result:    isEven ? 'Xỉu' : 'Tài'
+          };
+        }
+      }
+    }
+
+    // Thử 3: chỉ cùng kết quả gần nhất
+    for (let i = 1; i < history.length; i++) {
+      if (history[i].ket_qua === curKq) {
+        const nextTong = history[i - 1].tong;
+        if (nextTong) {
+          const isEven = nextTong % 2 === 0;
+          return {
+            found_at:  i,
+            match:     `${curKq} (chỉ kết quả)`,
+            next_tong: nextTong,
+            chan_le:   isEven ? 'Chẵn' : 'Lẻ',
+            result:    isEven ? 'Xỉu' : 'Tài'
           };
         }
       }
@@ -158,38 +169,58 @@ class ThuatToanB52 {
   }
 
   /*─────────────────────────────────────────
-    DỰ ĐOÁN CHÍNH
-    Kết hợp dice + total:
-    - Đồng ý → lấy kết quả đó
-    - Khác nhau → ưu tiên dice
+    DỰ ĐOÁN CHÍNH — Vote 3 thuật toán
+    - 2/3 đồng thuận → kết quả đó, tin cậy 50%
+    - 3/3 đồng thuận → kết quả đó, tin cậy 80%
   ─────────────────────────────────────────*/
   duDoan(history) {
     if (history.length < 5) return 'Chưa có dữ liệu';
 
     const dice  = this._dicePredict(history);
     const total = this._totalPredict(history);
+    const oe    = this._oddEvenPredict(history);
 
-    if (!dice && !total) return 'Chưa có dữ liệu';
-    if (!dice)  return total.result;
-    if (!total) return dice.result;
+    const results = [
+      dice?.result,
+      total?.result,
+      oe?.result
+    ].filter(Boolean);
 
-    // Cả hai cùng kết quả
-    if (dice.result === total.result) return dice.result;
+    if (!results.length) return 'Chưa có dữ liệu';
 
-    // Khác nhau → ưu tiên dice
-    return dice.result;
+    const tai = results.filter(r => r === 'Tài').length;
+    const xiu = results.filter(r => r === 'Xỉu').length;
+
+    // Ít nhất 2/3 đồng thuận
+    if (tai >= 2) return 'Tài';
+    if (xiu >= 2) return 'Xỉu';
+
+    // Chỉ có 1 kết quả → dùng luôn
+    return results[0];
   }
 
   /*─────────────────────────────────────────
-    CONFIDENCE — win rate thực tế 20 phiên
+    CONFIDENCE — dựa trên mức đồng thuận
   ─────────────────────────────────────────*/
   calculateConfidence(history) {
     if (history.length < 5) return 0;
-    const valid = history
-      .filter(h => h.status === '✅' || h.status === '❌')
-      .slice(0, 20);
-    if (valid.length < 5) return 0;
-    return Math.round(valid.filter(h => h.status === '✅').length / valid.length * 100);
+
+    const dice  = this._dicePredict(history);
+    const total = this._totalPredict(history);
+    const oe    = this._oddEvenPredict(history);
+
+    const results = [dice?.result, total?.result, oe?.result].filter(Boolean);
+    if (results.length < 2) return 0;
+
+    const tai = results.filter(r => r === 'Tài').length;
+    const xiu = results.filter(r => r === 'Xỉu').length;
+
+    // 3/3 đồng thuận
+    if (results.length === 3 && (tai === 3 || xiu === 3)) return 80;
+    // 2/3 đồng thuận
+    if (tai >= 2 || xiu >= 2) return 50;
+
+    return 0;
   }
 
   /*─────────────────────────────────────────
@@ -201,41 +232,57 @@ class ThuatToanB52 {
     const h   = Math.floor(min / 60);
     return {
       uptime: h > 0 ? `${h}h ${min % 60}m` : `${min}m`,
-      mode:   'Dice Analysis + Total Analysis'
+      mode:   'Dice(nearest) + Total(nearest) + OddEven'
     };
   }
 
   /*─────────────────────────────────────────
-    CHI TIẾT — dùng cho /api/detail
+    CHI TIẾT
   ─────────────────────────────────────────*/
   duDoanChiTiet(history) {
     if (history.length < 5) return null;
 
     const dice  = this._dicePredict(history);
     const total = this._totalPredict(history);
+    const oe    = this._oddEvenPredict(history);
     const final = this.duDoan(history);
+    const conf  = this.calculateConfidence(history);
+
+    const results = [dice?.result, total?.result, oe?.result].filter(Boolean);
+    const tai = results.filter(r => r === 'Tài').length;
+    const xiu = results.filter(r => r === 'Xỉu').length;
 
     return {
-      // Phân tích xúc xắc
+      // Thuật toán 1: Xúc xắc
       xuc_xac: dice ? {
-        d1: `${dice.d1_current} → dự đoán ${dice.d1_predict} (${dice.d1_samples} mẫu)`,
-        d2: `${dice.d2_current} → dự đoán ${dice.d2_predict} (${dice.d2_samples} mẫu)`,
-        d3: `${dice.d3_current} → dự đoán ${dice.d3_predict} (${dice.d3_samples} mẫu)`,
-        tong_du_doan: dice.tong_du_doan,
+        d1: `${dice.d1_cur} → ${dice.d1_pred}${dice.d1_at ? ` (phiên -${dice.d1_at})` : ' (fallback)'}`,
+        d2: `${dice.d2_cur} → ${dice.d2_pred}${dice.d2_at ? ` (phiên -${dice.d2_at})` : ' (fallback)'}`,
+        d3: `${dice.d3_cur} → ${dice.d3_pred}${dice.d3_at ? ` (phiên -${dice.d3_at})` : ' (fallback)'}`,
+        tong: dice.tong_du_doan,
         ket_qua: dice.result
       } : 'Không đủ data',
 
-      // Phân tích tổng
-      phan_tich_tong: total ? {
-        tong_hien_tai:  history[0].tong,
-        tim_thay_tai:   `${total.found_at} phiên trước${total.approx ? ' (±1)' : ''}`,
-        ket_qua:        total.result
+      // Thuật toán 2: Tổng
+      tong: total ? {
+        tim_tong: total.tong,
+        found_at: `phiên -${total.found_at}${total.approx ? ' (±1)' : ''}`,
+        ket_qua:  total.result
       } : 'Không tìm được',
 
-      // Kết hợp
-      dong_thuan:  dice && total ? dice.result === total.result : null,
-      uu_tien:     dice && total && dice.result !== total.result ? 'Xúc xắc' : null,
-      du_doan:     final,
+      // Thuật toán 3: Chẵn/Lẻ
+      chan_le: oe ? {
+        match:     oe.match,
+        found_at:  `phiên -${oe.found_at}`,
+        next_tong: oe.next_tong,
+        chan_le:    oe.chan_le,
+        ket_qua:   oe.result
+      } : 'Không tìm được',
+
+      // Tổng hợp
+      vote:      `Tài: ${tai}/3 | Xỉu: ${xiu}/3`,
+      dong_thuan: results.length === 3 && (tai === 3 || xiu === 3) ? '3/3 (80%)' : (tai >= 2 || xiu >= 2) ? '2/3 (50%)' : 'Không đồng thuận',
+      du_doan:    final,
+      do_tin_cay: conf,
 
       ...this.getStats()
     };
